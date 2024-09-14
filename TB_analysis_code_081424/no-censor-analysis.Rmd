@@ -1,0 +1,1952 @@
+---
+title: "Clean-up Analsys- No Censoring"
+author: "Jeffrey Liang"
+date: "2024-01-10"
+output: pdf_document
+---
+
+### Build the data
+
+```{r setup, include=FALSE}
+# source("./data_generation.R")
+# source("./hiv_data_generate.R")
+# source("./tb_follow_up_data_generation.R")
+rm(list=ls())
+
+knitr::opts_chunk$set(echo = F,warning = F,message = F,
+                      results = 'asis',
+                      fig.width = 8,
+                      fig.height = 8)
+library(survminer)
+library(arsenal)
+library(Hmisc)
+library(rms)
+library(ggfortify)
+library(patchwork)
+library(gridExtra)
+library(kableExtra)
+library(mice)
+library(lubridate)
+library(scales)
+library(viridisLite)
+library(tidyverse)
+library(ggthemes)
+library(splines)
+
+theme_set(
+  theme_pander() +
+    theme(
+    legend.position = "bottom",
+    title = element_text(size = 18),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    axis.text = element_text(size = 14),
+    legend.text = element_text(size = 14)
+  )
+)
+
+scale_colour_discrete <-scale_colour_ptol
+scale_color_discrete <-scale_colour_ptol
+
+sur_trans = function() trans_new("sur",function(x) 1-x, function(x) 1-x)
+
+tidydim <- function(x,prefix = "",surfix = "") {
+  print(paste0(prefix,dim(x)[1],surfix))
+  invisible(x)
+}
+
+source("fit.mult.impute.R")
+```
+
+# Sample HAART analysis:
+
+### Table 1
+
+```{r table 1, results="asis"}
+dt = readRDS("data/rebuilt_data_raw.rds") %>% 
+  filter(HAART > 0)
+
+medianIQR = function(x,weights=rep(1,length(x)), ...){
+  median = median(x,na.rm = T)
+  p = quantile(x,c(0.25,0.75),na.rm = T)
+  as.tbstat(c(median,p),sep = " ",sep2 = ", ",parens = c("(",")"))
+}
+
+my.control = 
+  tableby.control(
+    numeric.stats = "medianIQR",
+    numeric.test = 'wt',
+    digits = 1,
+    digits.p = 3,
+    stats.labels=list(meanIQR = "",sum = ""))
+
+dt.summary = 
+  tableby(
+  data =
+    dt %>%
+    mutate(ltfu = as.numeric(close_date-l_alive_d)>365,
+           ltfu = ltfu*(1-death_num)>0,
+           # HAART = HAART>0,
+           fudeath = fudeath/365,
+           death_num = death_num>0) %>% 
+    dplyr::select(
+      Site = site,
+      baselinetb,
+      `Year of enrollment` = baseyear,
+      Gender = male,
+      `Age at enrollment` = baseage,
+      `CD4 at enrollment` = cd4_base,
+      # `HAART Initiation` = HAART,
+      `Time to HAART(days)` = futime,
+      `Total follow-up(year)` = fudeath,
+      `Loss to follow-up` = ltfu,
+      Death  = death_num,
+    ),
+  formula = baselinetb ~ . ,
+  control = my.control
+) %>% 
+  summary(text = T) 
+
+dt.summary %>% 
+  knitr::kable(digits=3,caption = "Table 1")
+```
+
+```{r median cd4 count}
+
+dt %>% 
+  group_by(baseyear,baselinetb) %>% 
+  summarise(cd4 = median(cd4_base,na.rm = T)) %>% 
+  kable()
+
+```
+
+```{r site year}
+dt %>% 
+  group_by(site,baselinetb) %>% 
+  filter(n()>3) %>% 
+  summarise(baseyear = range(baseyear)) %>% 
+  knitr::kable(digits=3,caption = "Year range")
+```
+
+```{r}
+dt = readRDS("data/rebuilt_data_raw.rds") %>% 
+  filter(HAART > 0)
+
+dt.summary = 
+  tableby(
+  data =
+    dt %>%
+    mutate(ltfu = as.numeric(close_date-l_alive_d)>365,
+           ltfu = ltfu*(1-death_num)>0,
+           # HAART = HAART>0,
+           fudeath = fudeath/365,
+           death_num = death_num>0) %>% 
+    dplyr::select(
+      Site = site,
+      baselinetb,
+      `Year of enrollment` = baseyear,
+      Gender = male,
+      `Age at enrollment` = baseage,
+      `CD4 at enrollment` = cd4_base,
+      # `HAART Initiation` = HAART,
+      `Time to HAART(days)` = futime,
+      `Total follow-up(year)` = fudeath,
+      `Loss to follow-up` = ltfu,
+      Death  = death_num,
+    ),
+  formula = baselinetb ~ `CD4 at enrollment` ,
+) %>% 
+  summary(text = T) 
+
+dt.summary %>% 
+  knitr::kable()
+
+10812/27751
+737/2180
+11549/29931
+```
+
+
+```{r HAART DATA, }
+set.seed(123123)
+dt = readRDS("data/rebuilt_data.rds")%>% 
+  filter(HAART > 0)
+dt = select(dt,!where(lubridate::is.Date))
+dd <- datadist(dt) 
+options(datadist= 'dd')
+
+dd$limits$baseage[2] <- 35
+# dd$limits$male[2] <- "Male"
+dd$limits$cd4_base[2] <- 350
+dd$limits$baseyear[2] <- 2010
+
+# set.seed(1)
+# 
+# dt_imp =
+#    futuremice(dt,m = 20,n.core = 5,method = 'cart',maxit = 5,print=F)
+# write_rds(dt_imp,"data/haart.rds")
+  
+dt_imp = read_rds("data/haart.rds")
+```
+
+### Figure 1
+
+#### Fiugre 1a
+
+```{r fig 1a tbplot A}
+# TODO: add unadjust model
+
+site = unique(dt$site)
+
+tb.model.unadjust = 
+  Glm(baselinetb_num~rcs(baseyear,5),
+      family = binomial,
+      subset = dt$HAART>0,
+      data = dt)
+
+tb_unadjust = 
+  Predict(tb.model.unadjust,
+  baseyear = 2006:2020
+  ) %>% 
+  as.data.frame() %>% 
+  mutate_at(c("yhat","lower","upper"),~exp(.)/(1+exp(.))) %>% 
+  mutate(site = "Overall")
+
+# Seperate Model
+tb.model.unadjust <-
+  list(fit.mult.impute(
+      baselinetb_num ~ rcs(baseyear, 5),
+      data = dt,
+      fitter = Glm,
+      subset = dt$site == site[[1]] 
+          & dt$HAART>0
+         # & between(dt$baseyear,2006,2020)
+      ,
+      family = "binomial",
+      xtrans = dt_imp,
+      n.impute = 20,
+      y = TRUE,
+      x = TRUE
+    ),
+    fit.mult.impute(
+      baselinetb_num ~ rcs(baseyear, 4),
+      data = dt,
+      fitter = Glm,
+      subset = dt$site == site[[2]] 
+          & dt$HAART>0
+        # & between(dt$baseyear,2006,2022)
+      ,
+      family = "binomial",
+      xtrans = dt_imp,
+      n.impute = 20,
+      y = TRUE,
+      x = TRUE
+    ),fit.mult.impute(
+      baselinetb_num ~ rcs(baseyear, 4),
+      data = dt,
+      fitter = Glm,
+      subset = dt$site == site[[3]] 
+          & dt$HAART>0
+        # & between(dt$baseyear,2006,2018)
+      ,
+      family = "binomial",
+      xtrans = dt_imp,
+      n.impute = 20,
+      y = TRUE,
+      x = TRUE
+    ),fit.mult.impute(
+      baselinetb_num ~ rcs(baseyear, 5),
+      data = dt,
+      fitter = Glm,
+      subset = dt$site == site[[4]] 
+          & dt$HAART>0
+        # & between(dt$baseyear,2006,2018)
+      ,
+      family = "binomial",
+      xtrans = dt_imp,
+      n.impute = 20,
+      y = TRUE,
+      x = TRUE
+    ),
+    fit.mult.impute(
+      baselinetb_num ~ rcs(baseyear, 5),
+      data = dt,
+      fitter = Glm,
+      subset = dt$site == site[[5]]  
+          & dt$HAART>0
+        # & between(dt$baseyear,2006,2019)
+      ,
+      family = "binomial",
+      xtrans = dt_imp,
+      n.impute = 20,
+      y = TRUE,
+      x = TRUE
+    )
+    )
+
+
+tb.model = 
+  lapply(1:5,function(z){
+    Predict(tb.model.unadjust[[z]],
+    baseyear = 2006:2020
+    ) %>% 
+    as.data.frame() %>% 
+    mutate_at(c("yhat","lower","upper"),~exp(.)/(1+exp(.))) %>% 
+      mutate(site = site[[z]]) 
+})
+
+p_a = ggplot() +
+  geom_line(data = do.call(rbind, tb.model) %>% 
+          filter(!(site %in% c('Mexico','Honduras') &
+                  baseyear > 2018
+              ),
+              !(site %in% c('Peru') &
+                  baseyear > 2019
+              ),
+              !(site %in% c('Brazil') &
+                  baseyear > 2020
+              )), 
+       aes(x = baseyear, y = yhat,
+           color = site)
+            ,size = 1.5) + 
+  geom_line(data = tb_unadjust,
+            aes(x = baseyear, y = yhat,
+                linetype = site),
+            size = 3, alpha = 0.5)+
+    theme_pander() +
+    theme(
+    legend.position = "bottom",
+    axis.title.x = element_text(size = 22),
+    axis.title.y = element_text(size = 22),
+    axis.text = element_text(size = 22),
+    legend.text = element_text(size = 22)
+  ) +
+  labs(title = "A")+
+  scale_x_continuous(name = "Year of Enrollment",
+                     breaks = c(2006,2010,2015,2020)) +
+  scale_y_continuous(name = "Probablity of detected \nTB at Enrollment",
+    limits = c(0,0.20)
+    )+
+   scale_colour_discrete(name="")+
+  scale_linetype_discrete(name = "")+
+  theme(plot.title = element_text(hjust = 0,size = 30))+
+  guides(color = guide_legend(nrow=2))
+
+plot(p_a)
+```
+
+#### Figure 1b
+
+```{r include=FALSE,eval=F}
+# Unadjust Model
+
+model = list(
+  orm(cd4_base ~ ns(baseyear, 4),
+                   data = dt,
+                   subset = dt$tb==0
+          & dt$HAART>0
+                   ),
+  orm(cd4_base ~ rcs(baseyear, 3),
+                   data = dt,
+                   subset = dt$tb==1
+          & dt$HAART>0
+                   )
+)
+
+cd4_unadjust =
+  do.call(rbind,
+          lapply(1:2, function(i) {
+            model = model[[i]]
+            tb = c("No TB", "TB")[[i]]
+            qu = Quantile(model)
+            qu50 = function(lp) return(qu(.5, lp))
+            Predict(model, baseyear = 2006:2020,
+                    fun = qu50) %>%
+              as.data.frame() %>%
+              mutate(site = "Overall",
+                     baselinetb = tb)
+          })) %>% 
+  filter(!(baselinetb=='TB' & baseyear>2019))
+```
+
+```{r eval=T}
+model =
+  orm(cd4_base ~ rcs(baseyear, 3)*baselinetb,
+                   data = dt,
+      subset = dt$HAART>0
+                   )
+
+qu = Quantile(model)
+qu50 = function(lp) return(qu(.5, lp))
+cd4_unadjust = Predict(model, baseyear = 2006:2020,
+                    baselinetb = c("No TB", "TB"),
+                    fun = qu50)
+
+cd4_unadjust = cd4_unadjust %>% 
+              as.data.frame() %>%
+              mutate(site = "Overall")%>% 
+  filter(!(baselinetb=='TB' & baseyear>2019))
+
+```
+
+```{r}
+# Seperate Models
+
+cd4_non_tb_model =
+  list(
+    #Brazil
+    orm(cd4_base ~ rcs(baseyear, 4),
+          data = dt,
+          subset = (dt$site == 'Brazil')  & (dt$tb==0)
+          & dt$HAART>0
+    ),
+    #Honduras
+        orm(cd4_base ~ ns(baseyear, 3)
+            ,
+          data = dt,
+          subset = (dt$site == 'Honduras') & (dt$tb==0)
+          & dt$HAART>0
+    ),
+    #Mexico
+        orm(cd4_base ~ ns(baseyear, 2)
+            ,
+          data = dt,
+          subset = (dt$site == 'Mexico') & (dt$tb==0)
+          & dt$HAART>0
+    ),
+    #Peru
+        orm(cd4_base ~ ns(baseyear, 2)
+            ,
+          data = dt,
+          subset = (dt$site == 'Peru') & (dt$tb==0)
+          & dt$HAART>0
+    ),
+    #Haiti
+        orm(cd4_base ~ rcs(baseyear, 4),
+          data = dt,
+          subset = (dt$site == 'Haiti') & (dt$tb==0)
+          & dt$HAART>0
+    )
+  )
+
+cd4_non_tb_model =
+  # lapply(site, function(z) {
+  #   model =
+  #     orm(cd4_base ~ rcs(baseyear, 3)*baselinetb,
+  #         data = dt,
+  #         subset = dt$site == z)
+  lapply(1:5, function(i){
+    model = cd4_non_tb_model[[i]]
+    z = site[[i]]
+    qu = Quantile(model)
+    qu50 = function(lp)
+      qu(.5, lp)
+    
+    Predict(model, baseyear = 2006:2020, fun = qu50) %>%
+      as.data.frame() %>% 
+      mutate(site = z,baselinetb = "No TB") %>% 
+      filter(
+        !(site %in% c('Mexico', 'Honduras') & baseyear > 2018),
+        !(site %in% c('Peru') & baseyear > 2019),
+        !(site %in% c('Brazil') & baseyear > 2020)
+      )
+    
+  })
+
+cd4_tb_model =
+  list(
+    #Brazil
+    orm(cd4_base ~ rcs(baseyear, 3),
+          data = dt,
+          subset = (dt$site == 'Brazil')  & (dt$tb==1)
+          & dt$HAART>0
+    ),
+    #Honduras
+        orm(cd4_base ~ ns(baseyear, 2)
+            ,
+          data = dt,
+          subset = (dt$site == 'Honduras') & (dt$tb==1)
+          & dt$HAART>0
+    ),
+    #Mexico
+        orm(cd4_base ~ ns(baseyear, 2)
+            ,
+          data = dt,
+          subset = (dt$site == 'Mexico') & (dt$tb==1)
+          & dt$HAART>0
+    ),
+    #Peru
+        orm(cd4_base ~ ns(baseyear, 2)
+            ,
+          data = dt,
+          subset = (dt$site == 'Peru') & (dt$tb==1)
+          & dt$HAART>0
+    ),
+    #Haiti
+        orm(cd4_base ~ rcs(baseyear, 3),
+          data = dt,
+          subset = (dt$site == 'Haiti') & (dt$tb==1)
+          & dt$HAART>0
+    )
+  )
+
+cd4_tb_model =
+  # lapply(site, function(z) {
+  #   model =
+  #     orm(cd4_base ~ rcs(baseyear, 3)*baselinetb,
+  #         data = dt,
+  #         subset = dt$site == z)
+  lapply(1:5, function(i){
+    model = cd4_tb_model[[i]]
+    z = site[[i]]
+    qu = Quantile(model)
+    qu50 = function(lp)
+      qu(.5, lp)
+    
+    Predict(model, baseyear = 2006:2020, fun = qu50) %>%
+      as.data.frame() %>% 
+      mutate(site = z,
+             baselinetb = "TB") %>% 
+      filter(!(site %in% c('Peru', 'Mexico') &
+                 baseyear > 2018),!(site %in% c('Honduras') &
+                                      baseyear > 2019))
+    
+  })
+
+cd4_model = rbind(cd4_tb_model,cd4_non_tb_model)
+```
+
+```{r}
+cd4_unadjust %>% 
+  filter(baseyear %in% c(2006,2019))%>% 
+  knitr::kable(digits=3,caption = "cd4 count overall")
+```
+
+```{r fig 1b cd4 orm model}
+p_b = ggplot() +
+  geom_line(data =
+         do.call(rbind, cd4_model),
+       aes(x = baseyear, y = yhat, linetype = baselinetb,
+           color = site)
+            ,size = 1.5) +
+  labs(title = "B",
+       y = "CD4 Count at\nEnrollment",
+       x = "Year of Enrollment") +
+  geom_line(data = cd4_unadjust,
+            aes(x = baseyear, y = yhat,linetype = baselinetb),
+            size = 3, alpha = 0.5)+
+    theme_pander() +
+    theme(
+    legend.position = "bottom",
+    axis.title.x = element_text(size = 22),
+    axis.title.y = element_text(size = 22),
+    axis.text = element_text(size = 22),
+    legend.text = element_text(size = 22)
+  )+
+  scale_y_continuous(limits = c(0, 400)) +
+  scale_x_continuous(breaks = c(2006, 2010, 2015, 2020)) +
+  scale_colour_discrete(name = "") +
+  # scale_linetype_discrete(name = "")+
+  scale_linetype_manual(
+    name = '',
+    values = c("solid", "dashed"),
+    labels = c("No TB", "TB"),
+    guide = guide_legend(nrow = 1,
+                         override.aes = list(alpha = 1,
+                                             size = 1))
+  ) +
+  theme(plot.title = element_text(hjust = 0,size = 30),
+        legend.key.width = unit(2,"cm")) +
+  guides(color = 'none',
+         alpha = 'none')
+
+plot(p_b)
+```
+
+
+```{r figure 1, fig.height=8, fig.width=16}
+p_1 = p_a + guides(color = guide_legend(nrow=1), alpha = 'none')+ theme(legend.key.width = unit(1.5,"cm")) + 
+  p_b +guides(color = 'none', alpha = 'none', linetype = 'none') + theme(legend.key.width = unit(2,"cm"))+
+  plot_layout(guides = "collect")
+
+plot(p_1)
+ggsave("./figure/fig1.png",p_1,dpi=400,width = 16,height = 8)
+```
+
+#### CD4 less than 100
+
+```{r cd4 less than 100}
+# dt %>% 
+#   group_by(baseyear,baselinetb) %>% 
+#   summarise(cd4_less_100 = mean(cd4_base<100,na.rm = T)) %>% 
+#   filter(baseyear %in% c(2006,2018,2020))%>% 
+#   knitr::kable(digits=3,caption = "cd4 less than 100 overall")
+
+cd4_less_100 =
+  glm(cd4_100 ~ ns(baseyear, 4)*I(1-tb) +
+        ns(baseyear, 2)*I(1*tb)
+      ,
+      family = binomial,
+      subset = dt$HAART>0,
+      dt %>% mutate(cd4_100 = (cd4_base < 100)))
+
+cbind(expand.grid(
+  baselinetb = c("No TB", "TB"),
+  baseyear = c(2006,2018,2020)),
+  p = predict.glm(cd4_less_100,
+              expand.grid(
+                tb = c(0,1),
+                # baselinetb = c("No TB", "TB"),
+                baseyear = c(2006,2018,2020)
+              ),
+              type = 'response')
+  )%>%
+  knitr::kable(digits=3,,caption = "cd4 count less than 100")
+
+```
+
+```{r}
+dt %>% filter(tb==1) %>% 
+  group_by(tb,site,baseyear) %>% count()%>% 
+  knitr::kable(digits=3,caption = "TB count")
+```
+
+## Figure 2
+
+```{r}
+set.seed(123123)
+dt = readRDS("data/rebuilt_data.rds") %>% 
+  select(!where(lubridate::is.Date)) %>% 
+  filter(site=="Haiti",
+         HAART>0) %>%
+  select_if(function(x) 
+    length(na.omit(unique(x)))>1
+            ) %>% 
+  mutate(HAART = 1)
+
+dd <- datadist(dt) 
+options(datadist= 'dd')
+
+dd$limits$baseage[2] <- 35
+# dd$limits$male[2] <- "Male"
+dd$limits$cd4_base[2] <- 350
+dd$limits$baseyear[2] <- 2010
+
+# set.seed(1)
+# 
+# dt_imp =
+#   futuremice(dt,m = 20,n.core = 4,method = 'cart',maxit = 5)
+# write_rds(dt_imp,"data/haiti_haart.rds")
+  
+dt_imp = read_rds("data/haiti_haart.rds")
+```
+
+```{r}
+Srv <- with(dt,Surv(futime,HAART))
+CD4s <- c(100, 200, 350, 500)
+years <- seq(2006, 2020, by= 1) 
+site = as.factor(unique(dt$site))
+baselinetb = unique(dt$baselinetb)
+
+npm_i <-
+  fit.mult.impute(
+    Surv(futime,HAART) ~ 
+      baselinetb  +  rcs(baseyear, 4) + rcs(sqrt(cd4_base), 3) +
+      rcs(baseyear, 4) * rcs(sqrt(cd4_base), 3) +
+      baselinetb * rcs(baseyear, 4) +
+      baselinetb * (rcs(sqrt(cd4_base), 3))
+    ,
+    data = dt,
+    fitter = cph,
+    xtrans = dt_imp,
+    n.impute = 20,
+    y = TRUE,
+    x = TRUE,
+    surv = T
+  )
+
+result_same_day = 
+  Predict(npm_i, baseyear= years, 
+               cd4_base= c(200,350,500),
+               baselinetb, time = 1) %>% 
+  as_data_frame() %>% 
+  mutate_at(c("yhat","lower","upper"),function(x) 1-x) 
+
+kable(result_same_day %>% 
+        filter(baseyear == 2018),
+      caption = "same-day Haiti",
+      digits = 3)
+
+result_6_month =
+  Predict(npm_i, baseyear= years, 
+               cd4_base= c(200,350,500),
+               baselinetb, time = 14) %>% 
+  as_data_frame() %>% 
+  mutate_at(c("yhat","lower","upper"),function(x) 1-x) 
+
+kable(result_6_month %>% 
+        filter(baseyear == 2018),
+      caption = "14 days Haiti",
+      digits = 3)
+```
+
+```{r fig 2, fig.width = 8, fig.height = 8}
+
+quan <- Quantile(npm_i)
+  med <- function(x)
+    quan(0.5, lp = x)
+  
+dt_median = Predict(
+    npm_i,
+    baseyear = 2006:2020,
+    cd4_base = CD4s,
+    baselinetb,
+    fun = med
+  ) %>%
+    as_data_frame() %>%
+    mutate(cd4_base = as.factor(cd4_base),
+            across(where(is.numeric),function(x) ifelse(x<1,1,x))
+           )
+
+dt_median %>% 
+  filter(baseyear %in% c(2006,2020)) %>% 
+  arrange(baseyear)%>% 
+  knitr::kable(digits=3,caption = "Median Haiti")
+
+p = dt_median %>% 
+    ggplot(aes(x = baseyear, group = cd4_base)) +
+    geom_line(aes(y = yhat,
+                  color = cd4_base)
+              , size = 1) +
+    geom_ribbon(aes(ymin = lower,
+                    ymax = upper),
+                alpha = 0.1) +
+    facet_wrap( ~ baselinetb) +
+    scale_x_continuous(breaks = seq(2006,2020,len=4),
+                       labels = round(seq(2006,2020,len=4))) +
+    scale_colour_discrete(name = "CD4 Count at Enrollment") +
+    labs(y = "Median Days to ART",
+         x = "Year of Enrollment",
+         title = "Haiti") +
+    scale_y_continuous(
+      limits = c(1, 2000),
+      breaks = c(1,3, 7, 14, 30, 100, 300, 1000),
+      labels = c(0,3, 7, 14, 30, 100, 300, 1000),
+      trans = "log10"
+    ) +
+    theme(axis.text.x = element_text(angle = -45))
+  plot(p)
+  ggsave("./figure/median_time_fig2_Haiti.png",p,dpi=400)
+```
+
+## Figure 3
+
+```{r eval=F}
+knitr::knit("./logistic_plot.rmd")
+```
+
+![](figure/fig3_no_cen.png)
+
+```{r}
+dt %>% 
+  mutate(day7 = (futime<=0) * HAART) %>% 
+  group_by(baseyear,baselinetb) %>% 
+  summarise(day7 = mean(day7,na.rm = T))%>% 
+  knitr::kable(digits=3,caption = "same days Overall")
+
+dt %>% 
+  mutate(day7 = (futime<=7) * HAART) %>% 
+  group_by(baseyear,baselinetb) %>% 
+  summarise(day7 = mean(day7,na.rm = T))%>% 
+  knitr::kable(digits=3,caption = "7 days Overall")
+```
+
+# TB analysis
+
+## Figure 4
+
+```{r fig 4}
+set.seed(123123)
+
+dt = readRDS("data/rebuilt_data_raw.rds") %>% 
+  filter(HAART>0)
+
+
+model_list = lapply(as.factor(unique(dt$site)),
+                    function(z) {
+                      if(z %in% c("Mexico","Honduras")){
+                                              model = dt %>%
+                        filter(baselinetb_num > 0,
+                               site == z) %>%
+                        mutate(enrol2tb =
+                                 as.numeric(tbdiagnosis_d - enrol_d)) %>%
+                        orm(enrol2tb ~ rcs(baseyear, 3),
+                            data = .)
+                      } else{
+                      model = dt %>%
+                        filter(baselinetb_num > 0,
+                               site == z) %>%
+                        mutate(enrol2tb =
+                                 as.numeric(tbdiagnosis_d - enrol_d)) %>%
+                        orm(enrol2tb ~ rcs(baseyear, 4),
+                            data = .)
+                      }
+                      quan <- Quantile(model)
+                      med <- function(x)
+                        quan(0.5, lp = x)
+                      
+                      Predict(model,
+                              baseyear = unique(dt$baseyear),
+                              fun = med) %>%
+                        as_data_frame() %>%
+                        mutate(site = z)
+                    })
+
+model = dt %>%
+  filter(baselinetb_num > 0) %>%
+  mutate(enrol2tb =
+           as.numeric(tbdiagnosis_d - enrol_d)) %>%
+  orm(enrol2tb ~ rcs(baseyear, 4),
+      data = .)
+quan <- Quantile(model)
+med <- function(x)
+  quan(0.5, lp = x)
+
+p = ggplot(data = do.call(rbind, model_list) %>% 
+          filter(!(site %in% c('Mexico','Honduras') &
+                  baseyear > 2018
+              ),
+              !(site %in% c('Peru') &
+                  baseyear > 2019
+              ),
+              !(site %in% c('Brazil') &
+                  baseyear > 2020
+              ),
+              baseyear<=2020
+              )) +
+  geom_line(aes(x = baseyear, y = yhat, color = site)
+            ,size = 1.5) +
+  geom_line(
+    data = Predict(model,
+                   baseyear = 2006:2020,
+                   fun = med) %>%
+      as_data_frame() %>%
+      mutate(site = "Overall"),
+    aes(x = baseyear, y = yhat, linetype = site),
+    size = 3,alpha = 0.5
+  )+
+  scale_x_continuous(breaks = round(seq(2006, 2020, len=4)))+
+  scale_y_continuous(breaks = c(14,0,-20,-40))+
+  labs(y = "Median Days to Start of TB Treatment",
+       x = "Year of Enrollment")+
+  scale_colour_discrete(name="")+
+  scale_linetype_discrete(name = "")+
+  guides(color = guide_legend(nrow=2))+
+  theme(axis.title.y = element_text(margin = margin(r = 13)))
+
+plot(p)
+
+ggsave("./figure/fig4.png",p,dpi=400)
+```
+
+## Figure 5
+
+```{r TB Data, , collapse=TRUE}
+
+dt = read_rds("data/tb_follow_up_data.rds")  %>% 
+  filter(HAART>0) %>% 
+  # we begin with HAART patients
+  tidydim(.,"we begin with HAART patients: ") %>% 
+  filter(baselinetb_num==0 # keep only baseline non- TB samples
+            ) %>% 
+  tidydim(.,"Keep only baseline non- TB samples: ") %>% 
+  filter(art_before_tb>0) %>%  
+  # And those who have TB after HAART treatment
+  tidydim(.,"And keep those who have TB after HAART treatment: ") %>% 
+  select(!function(x) is.Date(x))
+
+# We end up with this many patients for the study
+print(nrow(dt))
+
+dt = dt %>% 
+  select(
+  futb,
+  baseage,
+  male,
+  tb_follow_num,
+  site,
+  baseyear,
+  cd4_haart,
+  cd4_base,
+  starts_with(c("insti", "nnrti", "pi"))
+)
+
+dd <- datadist(dt) 
+options(datadist= 'dd')
+#TODO : what's datalist and what is dd?
+
+dd$limits$baseage[2] <- 35
+dd$limits$male[2] <- "Male"
+dd$limits$cd4_base[2] <- 350
+dd$limits$baseyear[2] <- 2010
+
+Srv <- Surv(dt$futb, dt$tb_follow_num) # Time from TB diagnosis to ART treatment.
+
+# set.seed(123123)
+# imp_dt =
+#   futuremice(dt,m = 10,
+#              n.core = 7,
+#        method = "cart",
+#        maxit = 5,
+#        print = F)
+# write_rds(imp_dt,"data/tb.rds")
+
+imp_dt = read_rds("data/tb.rds")
+```
+
+```{r}
+
+dt %>% 
+  mutate(tb_within_6m = 
+           1*(futb<=180),
+         tb_within_6m = tb_within_6m*tb_follow_num) %>% 
+  summarise(sum(tb_within_6m),
+            mean(tb_within_6m)) %>% 
+  knitr::kable(digits=3,captions = "6 month overall")
+```
+
+```{r fig 5 unadjust subset site}
+
+unadjust_model =
+  list(
+    # Brazil
+    cph(
+      Surv(futb, tb_follow_num) ~ rcs(baseyear, 4),
+      data = dt,
+      subset = (dt$site == "Brazil"),
+      x = TRUE,
+      y = TRUE,
+      surv = TRUE
+    ),
+    # Honduras
+    cph(
+      Surv(futb, tb_follow_num) ~ rcs(baseyear, 3),
+      data = dt,
+      subset = (dt$site == "Honduras"),
+      x = TRUE,
+      y = TRUE,
+      surv = TRUE
+    ),
+    # Mexico
+    cph(
+      Surv(futb, tb_follow_num) ~ rcs(baseyear, 4),
+      data = dt,
+      subset = (dt$site == "Mexico"),
+      x = TRUE,
+      y = TRUE,
+      surv = TRUE
+    ),
+    # Peru
+    cph(
+      Surv(futb, tb_follow_num) ~ rcs(baseyear, 3),
+      data = dt,
+      subset = (dt$site == "Peru"),
+      x = TRUE,
+      y = TRUE,
+      surv = TRUE
+    ),
+    # Haiti
+    cph(
+      Surv(futb, tb_follow_num) ~ rcs(baseyear, 5),
+      data = dt,
+      subset = (dt$site == "Haiti"),
+      x = TRUE,
+      y = TRUE,
+      surv = TRUE
+    )
+  )
+
+unadjust_plot_df =
+  lapply(1:5,
+         function(i) {
+           model = unadjust_model[[i]]
+           z = c("Brazil", "Honduras", "Mexico", "Peru", "Haiti")[[i]]
+           
+           Predict(model,
+                   baseyear = seq(2006, 2020, 1),
+                   time = 180) %>%
+             as.data.frame() %>%
+             mutate(site = z) %>% 
+             filter(
+               !(site %in% c('Mexico', 'Honduras') & 
+                   baseyear > 2018),
+               !(site %in% c('Peru') & baseyear > 2019),
+               !(site %in% c('Brazil') & baseyear > 2020)
+             )
+         })
+
+model =
+  cph(
+    Surv(futb, tb_follow_num) ~ rcs(baseyear, 4),
+    data = dt,
+    x = TRUE,
+    y = TRUE,
+    surv = TRUE
+  )
+
+p =do.call(rbind, unadjust_plot_df) %>%
+  ggplot(., pval = T, adj.subtitle = FALSE) +
+  geom_line(aes(x = baseyear, y = 1 - yhat,color = site),
+            size = 1.5) +
+  geom_line(
+    data = Predict(model,
+                   baseyear = seq(2006, 2020, 1),
+                   time = 180) %>%
+      as.data.frame() %>%
+      mutate(site = "Overall"),
+    aes(x = baseyear, y = 1 - yhat, linetype = site),
+    size = 3,alpha = 0.5
+  ) +
+  scale_x_continuous(guide = guide_axis(angle = 0)) +
+  labs(y = 'Probability of Having TB within 6 months',
+       x = 'Year of Enrollment')+
+  theme(legend.position = "bottom",
+        axis.title.y = element_text(margin = margin(r = 13)))+
+ scale_colour_discrete(name="")+
+  scale_linetype_discrete(name = "")+
+  guides(color = guide_legend(nrow=2))+
+  scale_x_continuous(breaks = seq(2006,2020,len=4),
+                     labels = round(seq(2006,2020,len=4)))
+
+plot(p)
+
+ggsave("./figure/fig5.png",p,dpi=400)
+```
+```{r}
+Predict(model,
+                   baseyear = seq(2006, 2020, 1),
+                   time = 180) %>% 
+  mutate(yhat = 1 - yhat) %>% 
+  knitr::kable() 
+
+do.call(rbind, unadjust_plot_df) %>% 
+  mutate(yhat = 1 - yhat) %>% 
+  knitr::kable()
+```
+
+### TB multivariate Model
+
+#### adjust for cd4
+
+```{r}
+cd4adjust_model = 
+  fit.mult.impute(Surv(futb, tb_follow_num)~rcs(baseyear,4)+
+        rcs(sqrt(cd4_haart),3)+
+        strat(site),
+        data = dt,
+        xtrans = imp_dt,
+        fitter = cph,
+        n.impute = 10,
+      x = TRUE,
+      y = TRUE,
+      surv = TRUE)
+
+kable(summary(cd4adjust_model),vnames = "labels"
+      # ,"html"
+      )
+```
+
+#### adjust for regiment
+
+```{r}
+treatment_adjust_model = 
+  fit.mult.impute(Surv(futb, tb_follow_num)~rcs(baseyear,4)+
+        rcs(sqrt(cd4_haart),3)+
+         insti_only+
+        strat(site),
+        data =dt,
+        xtrans = imp_dt,
+        fitter = cph,
+        n.impute = 10,
+      x = TRUE,
+      y = TRUE,
+      surv = TRUE)
+
+kable(summary(treatment_adjust_model),vnames = "labels"
+      # ,"html"
+      ) %>% 
+  kable_styling(c(full_width= FALSE, "responsive", "condensed"))
+```
+
+# Supplemental
+
+## Sup Fig 1
+
+```{r }
+set.seed(123123)
+dt = readRDS("data/rebuilt_data.rds") %>% 
+  filter(HAART>0)
+dt = select(dt,!where(lubridate::is.Date))
+dd <- datadist(dt) 
+options(datadist= 'dd')
+
+dd$limits$baseage[2] <- 35
+# dd$limits$male[2] <- "Male"
+dd$limits$cd4_base[2] <- 350
+dd$limits$baseyear[2] <- 2010
+
+# set.seed(1)
+# 
+# dt_imp =
+#   mice(dt,m = 20,print = F)
+# write_rds(dt_imp,"data/haart.rds")
+  
+dt_imp = read_rds("data/haart.rds")
+```
+
+```{r sup fig 1 tb_adjust_for_cd4, fig.height=16, fig.width=8}
+
+site = unique(dt$site)
+
+tb.model.cd4 <-
+  list(fit.mult.impute(
+      baselinetb_num ~ rcs(baseyear, 5) + rcs(sqrt(cd4_base),3) ,
+      data = dt,
+      fitter = Glm,
+      subset = dt$site == site[[1]],
+      family = "binomial",
+      xtrans = dt_imp,
+      n.impute = 20,
+      y = TRUE,
+      x = TRUE
+    ),
+    fit.mult.impute(
+      baselinetb_num ~ rcs(baseyear, 4) + rcs(sqrt(cd4_base),3) ,
+      data = dt,
+      fitter = Glm,
+      subset = dt$site == site[[2]],
+      family = "binomial",
+      xtrans = dt_imp,
+      n.impute = 20,
+      y = TRUE,
+      x = TRUE
+    ),fit.mult.impute(
+      baselinetb_num ~ rcs(baseyear, 4) + rcs(sqrt(cd4_base),3) ,
+      data = dt,
+      fitter = Glm,
+      subset = dt$site == site[[3]],
+      family = "binomial",
+      xtrans = dt_imp,
+      n.impute = 20,
+      y = TRUE,
+      x = TRUE
+    ),fit.mult.impute(
+      baselinetb_num ~ rcs(baseyear, 4) + rcs(sqrt(cd4_base),3) ,
+      data = dt,
+      fitter = Glm,
+      subset = dt$site == site[[4]],
+      family = "binomial",
+      xtrans = dt_imp,
+      n.impute = 20,
+      y = TRUE,
+      x = TRUE
+    ),
+    fit.mult.impute(
+      baselinetb_num ~ rcs(baseyear, 5) + rcs(sqrt(cd4_base),3) ,
+      data = dt,
+      fitter = Glm,
+      subset = dt$site == site[[5]],
+      family = "binomial",
+      xtrans = dt_imp,
+      n.impute = 20,
+      y = TRUE,
+      x = TRUE
+    )
+    )
+
+p = do.call(grid.arrange,c(
+lapply(1:5,function(z){
+  p = Predict(tb.model.cd4[[z]],
+  baseyear = seq(2006, 2020, by= 1),
+  cd4_base = c(100,200,350,500)
+  ) %>% 
+  as.data.frame() %>% 
+  mutate_at(c("yhat","lower","upper"),~exp(.)/(1+exp(.))) %>% 
+  mutate(cd4_base = as.factor(cd4_base),
+         site = site[[z]]) %>% 
+  filter(!(site %in% c('Mexico','Honduras') &
+                  baseyear > 2018
+              ),
+              !(site %in% c('Peru') &
+                  baseyear > 2019
+              ),
+              !(site %in% c('Brazil') &
+                  baseyear > 2020
+              ),
+              baseyear<=2020
+              ) %>% 
+  ggplot(aes(x = baseyear, y = yhat),pval = TRUE) +
+  geom_line(aes(color = cd4_base, group = cd4_base)
+            ,size = 1) +
+  scale_x_continuous(limits = c(2006,2020),
+                     breaks = seq(2006,2020,len= 4),
+                     labels = round(seq(2006,2020,len= 4))) +
+    theme(legend.position = "none")+
+   scale_colour_discrete(name="CD4 Count at Enrollment")+
+  labs(title = site[[z]],
+       y = NULL,
+       x = NULL)
+  
+  if(z==5) {
+    p = 
+      p+theme(legend.position = "bottom")+
+      labs(x ="Year of enrollment")
+  }
+  return(p)
+}),
+nrow = 5,
+left = "Probability of having TB at Enrollment"))
+
+plot(p)
+ggsave("./figure/fig1_sup.png",p,dpi=400)
+
+table(dt$site,dt$baselinetb)
+```
+
+## Sup Fig 2
+
+```{r }
+set.seed(123123)
+dt = readRDS("data/rebuilt_data.rds") %>% 
+  filter(HAART>0)
+dt = select(dt,!where(lubridate::is.Date))
+dd <- datadist(dt) 
+options(datadist= 'dd')
+
+dd$limits$baseage[2] <- 35
+# dd$limits$male[2] <- "Male"
+dd$limits$cd4_base[2] <- 350
+dd$limits$baseyear[2] <- 2010
+
+set.seed(1)
+
+# dt_imp =
+#   mice(dt,m = 20,method = 'cart',maxit = 5,print = F)
+# write_rds(dt_imp,"data/haart.rds")
+  
+dt_imp = read_rds("data/haart.rds")
+```
+
+```{r interaction}
+
+Srv <- Surv(dt$futime, dt$HAART)
+CD4s <- c(100, 200, 350, 500)
+years <- seq(2006, 2020, by= 1) 
+site = as.factor(unique(dt$site))
+baselinetb = unique(dt$baselinetb)
+
+## interaction Model
+npm_i <-
+  fit.mult.impute(
+    Surv(futime,HAART) ~ baselinetb  +  rcs(baseyear, 4) + rcs(sqrt(cd4_base), 3) +
+      rcs(baseyear, 4) * (rcs(sqrt(cd4_base), 3) + (baselinetb)) +
+      baselinetb * (rcs(sqrt(cd4_base), 3)) +strat(site),
+    data = dt,
+    fitter = cph,
+    xtrans = dt_imp,
+    n.impute = 20,
+    y = TRUE,
+    x = TRUE,
+    surv = T
+  )
+```
+
+```{r sup_fig 2 median plot with Haiti,eval=FALSE}
+
+site_level = levels(npm_i$strata)
+
+# Median Plot
+
+for(s in unique(dt$site)) {
+  quan <- Quantile(npm_i)
+  med <- function(x)
+    quan(0.5, lp = x,
+         stratum = which(str_detect(site_level, s)))
+  
+  p = Predict(
+    npm_i,
+    baseyear = years,
+    site = s,
+    cd4_base = CD4s,
+    baselinetb,
+    fun = med
+  ) %>%
+    as_data_frame() %>%
+    mutate(cd4_base = as.factor(cd4_base),
+           across(where(is.numeric),function(x) ifelse(x<1,1,x))
+           )%>% 
+    ggplot(aes(x = baseyear, group = cd4_base)) +
+    geom_line(aes(y = yhat,
+                  color = cd4_base)
+              , size = 1) +
+    geom_ribbon(aes(ymin = lower,
+                    ymax = upper),
+                alpha = 0.1) +
+    facet_wrap( ~ baselinetb) +
+    scale_x_continuous(breaks = seq(2006,2020,len=4),
+                       labels = round(seq(2006,2020,len=4))) +
+    scale_colour_discrete(name = "CD4 Count at Enrollment") +
+    labs(y = "Median Time to ART",
+         x = "Year of Enrollment",
+         title = s) +
+    scale_y_continuous(
+      limits = c(1, 2000),
+      breaks = c(1,3, 7, 14, 30, 100, 300, 1000),
+      labels = c(0,3, 7, 14, 30, 100, 300, 1000),
+      trans = "log10"
+    ) +
+    theme(axis.text.x = element_text(angle = -45))
+  plot(p)
+  ggsave(paste0("./figure/median_time_fig2_",s,".png"),p,
+         dpi=400)
+}
+
+```
+
+### Fig 2 without Haiti in training
+
+```{r}
+set.seed(123123)
+dt = readRDS("data/rebuilt_data.rds") %>% 
+  filter(HAART>0,
+         site != "Haiti") %>% 
+  select(!where(lubridate::is.Date)) %>% 
+  select_if(function(x) length(na.omit(unique(x)))>1) %>% 
+  mutate(HAART = 1)
+
+dd <- datadist(dt) 
+options(datadist= 'dd')
+
+dd$limits$baseage[2] <- 35
+# dd$limits$male[2] <- "Male"
+dd$limits$cd4_base[2] <- 350
+dd$limits$baseyear[2] <- 2010
+
+# set.seed(1)
+# 
+# dt_imp =
+#   futuremice(dt,m = 20,n.core = 4, method = 'cart',maxit = 5)
+# write_rds(dt_imp,"data/no_haiti_haart.rds")
+
+dt_imp = read_rds("data/no_haiti_haart.rds")
+```
+
+```{r interaction without haiti}
+
+Srv <- Surv(dt$futime, dt$HAART)
+CD4s <- c(100, 200, 350, 500)
+years <- seq(2006, 2020, by= 1) 
+site = as.factor(unique(dt$site))
+baselinetb = unique(dt$baselinetb)
+
+## interaction Model
+npm_i <-
+  fit.mult.impute(
+    Surv(futime,HAART) ~ baselinetb  +  rcs(baseyear, 4) + rcs(sqrt(cd4_base), 3) +
+      rcs(baseyear, 4) * (rcs(sqrt(cd4_base), 3) + (baselinetb)) +
+      baselinetb * (rcs(sqrt(cd4_base), 3)) +strat(site),
+    data = dt,
+    subset = dt$site != "Haiti",
+    fitter = cph,
+    xtrans = dt_imp,
+    n.impute = 20,
+    y = TRUE,
+    x = TRUE,
+    surv = T
+  )
+```
+
+```{r}
+dt %>% 
+  filter(site != "Haiti",tb==1) %>% 
+  group_by(baselinetb,site,baseyear) %>% 
+  count()%>% 
+  knitr::kable(digits=3,caption = "Not Haiti TB count")
+```
+
+```{r sup_fig 2 median plot}
+
+site_level = levels(npm_i$strata)
+
+# Median Plot
+
+for(s in c("Brazil","Honduras","Mexico","Peru")) {
+  quan <- Quantile(npm_i)
+  med <- function(x)
+    quan(0.5, lp = x,
+         stratum = which(str_detect(site_level, s)))
+  
+  p = Predict(
+    npm_i,
+    baseyear = 2006:2020,
+    site = s,
+    cd4_base = CD4s,
+    baselinetb,
+    fun = med
+  ) %>%
+    as_data_frame() %>%
+    filter(!(site %in% c('Mexico','Honduras') &
+                  baseyear > 2018 & baselinetb=='TB'
+              ),
+              !(site %in% c('Peru') &
+                  baseyear > 2019 & baselinetb=='TB'
+              )) %>% 
+    mutate(cd4_base = as.factor(cd4_base),
+           across(where(is.numeric),function(x) ifelse(x<1,1,x))
+           )%>% 
+    ggplot(aes(x = baseyear, group = cd4_base)) +
+    geom_line(aes(y = yhat,
+                  color = cd4_base)
+              , size = 1) +
+    geom_ribbon(aes(ymin = lower,
+                    ymax = upper),
+                alpha = 0.1) +
+    facet_wrap( ~ baselinetb) +
+    scale_x_continuous(breaks = seq(2006,2020,len=4),
+                       labels = round(seq(2006,2020,len=4))) +
+    scale_colour_discrete(name = "CD4 Count at Enrollment") +
+    labs(y = "Median Time to ART",
+         x = "Year of Enrollment",
+         title = s) +
+    scale_y_continuous(
+      limits = c(1, 2000),
+      breaks = c(1,3, 7, 14, 30, 100, 300, 1000),
+      labels = c(0,3, 7, 14, 30, 100, 300, 1000),
+      trans = "log10"
+    ) +
+    theme(axis.text.x = element_text(angle = -45))
+  plot(p)
+  ggsave(paste0("./figure/median_time_sup_fig2_",s,".png"),p,
+         dpi=400)
+}
+
+```
+
+## Sup Fig 3
+
+```{r figure3_sub, fig.height=12, fig.width=10,include=FALSE}
+
+## Not Sure if still Use ##
+p_data = tibble(time = c(1,7,30,180)) %>% 
+  mutate(df = map(time,~Predict(npm_i, baseyear= years, 
+               cd4_base= 200,
+               site = c("Brazil","Honduras","Mexico","Peru"),
+               baselinetb, 
+               time = .x) %>% 
+  as_data_frame() %>%
+    filter(!(site %in% c('Mexico','Honduras') &
+                  baseyear > 2018 & baselinetb=='TB'
+              ),
+              !(site %in% c('Peru') &
+                  baseyear > 2019 & baselinetb=='TB'
+              )) %>% 
+  mutate_at(c("yhat","lower","upper"),function(x) 1-x)),
+  time_num = time,
+  time = str_c("Day ",time)) %>% 
+  unnest(df) %>% 
+  mutate(time = forcats::fct_reorder(time,time_num))
+
+filter(p_data,baseyear==2020,time_num==1) %>% 
+  kable(digits=3,caption = "Day 1")
+
+filter(p_data,baseyear==2020,time_num==180) %>% 
+  kable(digits=3,caption = "180 Day")
+
+p = ggplot(p_data,aes(x = baseyear,group = site))+
+  geom_line(aes(y=yhat,color=site)
+            ,size = 1)+
+  geom_ribbon(aes(ymin = upper, ymax = lower,group = site),alpha = 0.1)+
+  facet_wrap(time~baselinetb,ncol=2)+ 
+  labs(x = "Year of Enrollment",
+       y = "Predicted Probability of Initiated ART",
+       title = NULL)+
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = -45))+
+     scale_colour_discrete(name = NULL)+
+      guides(color = guide_legend(nrow=1))+
+    scale_x_continuous(breaks = seq(2006,2020,len=4),
+                       labels = round(seq(2006,2020,len=4))) +
+  ylim(c(0,1))
+
+plot(p)
+# ggsave("./fig3_sub.png",p,dpi=400)
+```
+
+## Sup Fig 4
+
+```{r}
+
+set.seed(123123)
+dt = readRDS("data/hiv_data.rds") %>%
+  filter(baseyear>=2006,
+         hivdiagnosis_d !="1900-01-01",
+         HAART>0) %>%
+  select(-contains("_rs"))
+dt = select(dt,!where(lubridate::is.Date))
+dd <- datadist(dt) 
+options(datadist= 'dd')
+
+dd$limits$baseage[2] <- 35
+# dd$limits$male[2] <- "Male"
+dd$limits$cd4_hiv[2] <- 350
+dd$limits$hivyear[2] <- 2010
+
+years = 2006:2022
+CD4s = c(100,200,350,500)
+
+# set.seed(1)
+# 
+# dt_imp =
+#   futuremice(dt,m = 20,n.core = 7,method = 'cart',maxit=5,print = F)
+# write_rds(dt_imp,"data/hiv_haart.rds")
+  
+dt_imp = read_rds("data/hiv_haart.rds")
+```
+
+```{r}
+Srv <- Surv(dt$fuhiv2art, dt$HAART)
+CD4s <- c(100, 200, 350, 500)
+years <- seq(2006, 2020, by= 1) 
+site = as.factor(unique(dt$site))
+baselinetb = unique(dt$baselinetb)
+
+## interaction Model
+npm_i <-
+  fit.mult.impute(
+    Surv(fuhiv2art,HAART) ~ baselinetb  +  rcs(hivyear, 4) + rcs(sqrt(cd4_hiv), 3) +
+      rcs(hivyear, 4) * (rcs(sqrt(cd4_hiv), 3) + (baselinetb)) +
+      baselinetb * (rcs(sqrt(cd4_hiv), 3)) +strat(site),
+    data = dt,
+    subset = dt$site!="Haiti" & !is.na(dt$fuhiv2art),
+    fitter = cph,
+    xtrans = dt_imp,
+    n.impute = 20,
+    y = TRUE,
+    x = TRUE,
+    surv = T
+  )
+
+
+```
+
+```{r}
+dt %>% filter(site!="Haiti",baselinetb=="TB") %>% 
+  group_by(site,baseyear) %>% count()%>% 
+  knitr::kable(digits=3,caption = "Not Haiti TB count")
+```
+
+```{r}
+site_level = levels(npm_i$strata)
+
+# Median Plot
+
+for(s in c("Brazil","Honduras","Mexico","Peru")) {
+  quan <- Quantile(npm_i)
+  med <- function(x)
+    quan(0.5, lp = x,
+         stratum = which(str_detect(site_level, s)))
+  
+  p = Predict(
+    npm_i,
+    hivyear = 2006:2020,
+    site = s,
+    cd4_hiv = CD4s,
+    baselinetb,
+    fun = med
+  ) %>%
+    as_data_frame() %>%
+    mutate(cd4_hiv = as.factor(cd4_hiv),
+           across(where(is.numeric),function(x) ifelse(x<1,1,x))
+           )%>%
+    filter(!(site %in% c('Honduras') &
+                  hivyear > 2018 & baselinetb=='TB'
+              ),
+              !(site %in% c('Peru') &
+                  hivyear > 2019 & baselinetb=='TB'
+              ),
+              !(site %in% c('Mexico') &
+                  hivyear > 2017 & baselinetb=='TB'
+              )) %>% 
+    ggplot(aes(x = hivyear, group = cd4_hiv)) +
+    geom_line(aes(y = yhat,
+                  color = cd4_hiv)
+              , size = 1) +
+    geom_ribbon(aes(ymin = lower,
+                    ymax = upper),
+                alpha = 0.1) +
+    facet_wrap( ~ baselinetb) +
+    scale_x_continuous(limits = c(2006,2020),
+                       breaks = seq(2006,2020,len=4),
+                       labels = round(seq(2006,2020,len=4))) +
+    scale_colour_discrete(name = "CD4 Count at HIV Diagnosis") +
+    labs(y = "Median Time to ART",
+         x = "Year of HIV Diagnosis",
+         title = s) +
+    scale_y_continuous(
+      limits = c(1, 4000),
+      breaks = c(1,3, 7, 14, 30, 100, 300, 1000,3000),
+      labels = c(0,3, 7, 14, 30, 100, 300, 1000,3000),
+      trans = "log10"
+    ) +
+    theme(axis.text.x = element_text(angle = -45))
+  plot(p)
+  ggsave(paste0("./figure/median_time_fig4_",s,".png"),p,
+         dpi=400)
+}
+```
+
+#### Haiti
+
+```{r}
+set.seed(123123)
+dt = readRDS("data/hiv_data.rds") %>%
+  filter(baseyear>=2006,
+         hivdiagnosis_d !="1900-01-01",
+         HAART>0,
+         site == "Haiti") %>%
+  select(-contains("_rs")) %>% 
+  select(!where(lubridate::is.Date)) %>% 
+  select_if(function(x) length(na.omit(unique(x)))>1) %>% 
+  mutate(HAART = 1)
+
+dd <- datadist(dt) 
+options(datadist= 'dd')
+
+dd$limits$baseage[2] <- 35
+# dd$limits$male[2] <- "Male"
+dd$limits$cd4_hiv[2] <- 350
+dd$limits$hivyear[2] <- 2010
+
+years = 2006:2022
+CD4s = c(100,200,350,500)
+
+# set.seed(1)
+# 
+# dt_imp =
+#   futuremice(dt,m = 20,n.core = 7,method = 'cart',maxit=5,print = F)
+# write_rds(dt_imp,"data/haiti_hiv_haart.rds")
+  
+dt_imp = read_rds("data/haiti_hiv_haart.rds")
+```
+
+```{r}
+CD4s <- c(100, 200, 350, 500)
+years <- seq(2006, 2020, by= 1) 
+baselinetb = unique(dt$baselinetb)
+
+npm_i <-
+  fit.mult.impute(
+    Surv(fuhiv2art,HAART) ~ 
+      baselinetb  +  rcs(baseyear, 4) + rcs(sqrt(cd4_base), 3) +
+      rcs(baseyear, 4) * rcs(sqrt(cd4_base), 3) +
+      baselinetb * rcs(baseyear, 4) +
+      baselinetb * (rcs(sqrt(cd4_base), 3)),
+    data = dt,
+    fitter = cph,
+    xtrans = dt_imp,
+    n.impute = 20,
+    y = TRUE,
+    x = TRUE,
+    surv = T
+  )
+```
+
+```{r}
+quan <- Quantile(npm_i)
+  med <- function(x)
+    quan(0.5, lp = x)
+  
+  p = Predict(
+    npm_i,
+    baseyear = years,
+    cd4_base = CD4s,
+    baselinetb,
+    fun = med
+  ) %>%
+    as_data_frame() %>%
+    mutate(cd4_base = as.factor(cd4_base),
+           across(where(is.numeric),function(x) ifelse(x<1,1,x))
+           )%>% 
+    ggplot(aes(x = baseyear, group = cd4_base)) +
+    geom_line(aes(y = yhat,
+                  color = cd4_base)
+              , size = 1) +
+    geom_ribbon(aes(ymin = lower,
+                    ymax = upper),
+                alpha = 0.1) +
+    facet_wrap( ~ baselinetb) +
+    scale_x_continuous(breaks = seq(2006,2020,len=4),
+                       labels = round(seq(2006,2020,len=4))) +
+    scale_colour_discrete(name = "CD4 Count at HIV Diagnosis") +
+    labs(y = "Median Time to ART",
+         x = "Year of HIV Diagnosis",
+         title = "Haiti") +
+    scale_y_continuous(
+      limits = c(1, 2000),
+      breaks = c(1,3, 7, 14, 30, 100, 300, 1000),
+      labels = c(0,3, 7, 14, 30, 100, 300, 1000),
+      trans = "log10"
+    ) +
+    theme(axis.text.x = element_text(angle = -45))
+  plot(p)
+  
+ggsave("./figure/median_time_fig4_sup_haiti.png",p,
+         dpi=400)
+```
+
+## Sup Median Time to HAART overall
+
+```{r}
+set.seed(123123)
+dt = readRDS("data/rebuilt_data.rds") %>% 
+  select(!where(lubridate::is.Date)) %>% 
+  filter(HAART>0)
+
+dd <- datadist(dt) 
+options(datadist= 'dd')
+
+dd$limits$baseage[2] <- 35
+# dd$limits$male[2] <- "Male"
+dd$limits$cd4_base[2] <- 350
+dd$limits$baseyear[2] <- 2010
+
+
+Srv <- with(dt,Surv(futime,HAART))
+years <- seq(2006, 2020, by= 1) 
+baselinetb = unique(dt$baselinetb)
+
+npm_i = cph(Surv(futime,HAART) ~ 
+      baselinetb  +  rcs(baseyear, 4) +
+      baselinetb * rcs(baseyear, 4)
+    ,
+    data = dt,
+    x = TRUE,
+    y = TRUE,
+    surv = T)
+
+quan <- Quantile(npm_i)
+  med <- function(x)
+    quan(0.5, lp = x)
+  
+dt_median = Predict(
+    npm_i,
+    baseyear = 2006:2020,
+    baselinetb,
+    fun = med
+  ) %>%
+    as_data_frame() %>%
+    mutate(across(where(is.numeric),function(x) ifelse(x<1,1,x))
+           )
+
+dt_median %>% 
+  filter(baseyear %in% c(2006,2020)) %>% 
+  arrange(baseyear)%>% 
+  knitr::kable(digits=3,caption = "Median Overall")
+```
+
+
+## Sup incidence TB from enrollment
+
+```{r TB Data, , collapse=TRUE}
+
+dt = read_rds("data/tb_follow_up_data.rds")  %>% 
+  filter(HAART>0) %>% 
+  # we begin with HAART patients
+  tidydim(.,"we begin with HAART patients: ") %>% 
+  filter(baselinetb_num==0 # keep only baseline non- TB samples
+            ) %>% 
+  tidydim(.,"Keep only baseline non- TB samples: ") %>% 
+  select(!function(x) is.Date(x))
+
+# We end up with this many patients for the study
+print(nrow(dt))
+
+dt = dt %>% 
+  select(
+  futb,
+  futime,
+  fuenrol2tb,
+  baseage,
+  male,
+  art_before_tb,
+  tb_follow_num,
+  site,
+  baseyear,
+  cd4_haart,
+  cd4_base,
+  starts_with(c("insti", "nnrti", "pi"))
+)
+
+dd <- datadist(dt) 
+options(datadist= 'dd')
+#TODO : what's datalist and what is dd?
+
+dd$limits$baseage[2] <- 35
+dd$limits$male[2] <- "Male"
+dd$limits$cd4_base[2] <- 350
+dd$limits$baseyear[2] <- 2010
+
+Srv <- Surv(dt$futb, dt$tb_follow_num) # Time from TB diagnosis to ART treatment.
+
+# set.seed(123123)
+# imp_dt =
+#   futuremice(dt,m = 10,
+#              n.core = 7,
+#        method = "cart",
+#        maxit = 5,
+#        print = F)
+# write_rds(imp_dt,"data/tb_enroll.rds")
+
+imp_dt = read_rds("data/tb_enroll.rds")
+```
+
+
+```{r}
+
+dt %>% 
+  mutate(tb_within_6m = 
+           1*(fuenrol2tb<=180),
+         tb_within_6m = tb_within_6m*tb_follow_num) %>% 
+  summarise(sum(tb_within_6m),
+            mean(tb_within_6m)) %>% 
+  knitr::kable(digits=3,caption = "6 month overall")
+
+dt %>% 
+  mutate(tb_within_6m = 
+           1*(fuenrol2tb<=180),
+         tb_within_6m = tb_within_6m*tb_follow_num) %>% 
+  group_by(`art_in_6m` = art_before_tb) %>%
+  summarise(sum(tb_within_6m),
+            mean(tb_within_6m)) %>% 
+  knitr::kable(digits=3,caption = "6 month overall, by art")
+```
+
+```{r fig 5 unadjust subset site}
+
+unadjust_model =
+  list(
+    # Brazil
+    cph(
+      Surv(fuenrol2tb, tb_follow_num) ~ rcs(baseyear, 3),
+      data = dt,
+      subset = (dt$site == "Brazil"),
+      x = TRUE,
+      y = TRUE,
+      surv = TRUE
+    ),
+    # Honduras
+    cph(
+      Surv(fuenrol2tb, tb_follow_num) ~ rcs(baseyear, 3),
+      data = dt,
+      subset = (dt$site == "Honduras"),
+      x = TRUE,
+      y = TRUE,
+      surv = TRUE
+    ),
+    # Mexico
+    cph(
+      Surv(fuenrol2tb, tb_follow_num) ~ rcs(baseyear, 4),
+      data = dt,
+      subset = (dt$site == "Mexico"),
+      x = TRUE,
+      y = TRUE,
+      surv = TRUE
+    ),
+    # Peru
+    cph(
+      Surv(fuenrol2tb, tb_follow_num) ~ rcs(baseyear, 3),
+      data = dt,
+      subset = (dt$site == "Peru"),
+      x = TRUE,
+      y = TRUE,
+      surv = TRUE
+    ),
+    # Haiti
+    cph(
+      Surv(fuenrol2tb, tb_follow_num) ~ rcs(baseyear, 5),
+      data = dt,
+      subset = (dt$site == "Haiti"),
+      x = TRUE,
+      y = TRUE,
+      surv = TRUE
+    )
+  )
+
+unadjust_plot_df =
+  lapply(1:5,
+         function(i) {
+           model = unadjust_model[[i]]
+           z = c("Brazil", "Honduras", "Mexico", "Peru", "Haiti")[[i]]
+           
+           Predict(model,
+                   baseyear = seq(2006, 2020, 1),
+                   time = 180) %>%
+             as.data.frame() %>%
+             mutate(site = z) %>% 
+             filter(
+               !(site %in% c('Mexico', 'Honduras') & 
+                   baseyear > 2018),
+               !(site %in% c('Peru') & baseyear > 2019),
+               !(site %in% c('Brazil') & baseyear > 2020)
+             )
+         })
+
+model =
+  cph(
+    Surv(fuenrol2tb, tb_follow_num) ~ rcs(baseyear, 4),
+    data = dt,
+    x = TRUE,
+    y = TRUE,
+    surv = TRUE
+  )
+
+p =do.call(rbind, unadjust_plot_df) %>%
+  ggplot(., pval = T, adj.subtitle = FALSE) +
+  geom_line(aes(x = baseyear, y = 1 - yhat,color = site),
+            size = 1.5) +
+  geom_line(
+    data = Predict(model,
+                   baseyear = seq(2006, 2020, 1),
+                   time = 180) %>%
+      as.data.frame() %>%
+      mutate(site = "Overall"),
+    aes(x = baseyear, y = 1 - yhat, linetype = site),
+    size = 3,alpha = 0.5
+  ) +
+  scale_x_continuous(guide = guide_axis(angle = 0)) +
+  labs(y = 'Probability of Having TB within 6 months',
+       x = 'Year of Enrollment')+
+  theme(legend.position = "bottom")+
+ scale_colour_discrete(name="")+
+  scale_linetype_discrete(name = "")+
+  guides(color = guide_legend(nrow=2))+
+  scale_x_continuous(breaks = seq(2006,2020,len=4),
+                     labels = round(seq(2006,2020,len=4)))
+
+plot(p)
+
+ggsave("./figure/fig5_enroll.png",p,dpi=400)
+```
+
+```{r}
+Predict(model,
+                   baseyear = seq(2006, 2020, 1),
+                   time = 180) %>% 
+  mutate(yhat = 1 - yhat) %>% 
+  filter(baseyear %in% c(2006,2020)) %>%
+  knitr::kable(caption = "Overall Incident TB rate",digits = 3) 
+
+do.call(rbind, unadjust_plot_df) %>% 
+  mutate(yhat = 1 - yhat) %>% 
+  knitr::kable()
+```

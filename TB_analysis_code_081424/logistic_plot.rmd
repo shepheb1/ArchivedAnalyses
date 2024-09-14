@@ -1,0 +1,990 @@
+---
+title: "Logistic Graph"
+output:
+  pdf_document: default
+  word_document: default
+editor: source
+---
+
+```{r}
+#| include: false
+
+rm(list=ls())
+knitr::opts_chunk$set(echo = F,warning = F,message = F,
+                      results = 'asis',
+                      fig.width = 8,
+                      fig.height = 8)
+library(survminer)
+library(arsenal)
+library(Hmisc)
+library(rms)
+library(splines)
+library(ggfortify)
+library(patchwork)
+library(gridExtra)
+library(mice)
+library(lubridate)
+library(scales)
+library(viridisLite)
+library(tidyverse)
+library(ggthemes)
+library(foreach)
+
+theme_set(
+  theme_pander() +
+    theme(
+    legend.position = "bottom",
+    title = element_text(size = 18),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    axis.text = element_text(size = 14),
+    legend.text = element_text(size = 14)
+  )
+)
+
+scale_colour_discrete <-scale_colour_ptol
+scale_color_discrete <-scale_colour_ptol
+
+sur_trans = function() trans_new("sur",function(x) 1-x, function(x) 1-x)
+
+tidydim <- function(x,prefix = "",surfix = "") {
+  print(paste0(prefix,dim(x)[1],surfix))
+  invisible(x)
+}
+
+source("fit.mult.impute.R")
+```
+
+
+## Enrollment as start
+```{r}
+set.seed(123123)
+dt = readRDS("data/rebuilt_data.rds") %>% 
+  ########### New analysis Only do HAART patieint#########
+  filter(HAART>0) %>%
+  select_if(function(x) length(na.omit(unique(x)))>1)
+            
+  #   ) %>% 
+  # mutate(HAART = 1)
+  ########### New analysis Only do HAART patieint#########
+
+dt = select(dt,!where(lubridate::is.Date))%>% 
+  mutate(day0 = futime<1,
+         day1 = futime<=1,
+         day14 = futime<=14,
+         day30 = futime<=30,
+         day180 = futime<=180,
+         )
+
+dd <- datadist(dt) 
+options(datadist= 'dd')
+
+dd$limits$baseage[2] <- 35
+# dd$limits$male[2] <- "Male"
+dd$limits$cd4_base[2] <- 350
+dd$limits$baseyear[2] <- 2006
+
+# set.seed(1)
+# 
+# dt_imp =
+#   futuremice(dt,m = 20,n.core = 5,method = 'cart',maxit = 5)
+# write_rds(dt_imp,"data/haart.rds")
+
+dt_imp = read_rds("data/haart.rds")
+```
+
+
+
+
+```{r}
+
+sites = unique(dt$site)
+
+dt %>% 
+  filter(tb==1) %>% 
+  group_by(site,baseyear) %>% 
+  count()
+
+## Comment on mexico after 2019
+```
+
+
+
+```{r Peru}
+model_Peru =
+  list(
+    glm(
+      day0 ~ baselinetb +
+        ns(I(1 - tb) * baseyear, knots =c(2012,2016,2019)) +
+        ns(I(tb) * baseyear, 1)
+      ,
+      dt ,
+      subset = (dt$site == 'Peru'),
+      family = 'binomial'
+    ),
+    glm(
+      day1 ~ baselinetb +
+        ns(I(1 - tb) * baseyear, knots = c(2012,2016,2019)) +
+       ns(I(tb) * baseyear, 1)
+      ,
+      dt ,
+      subset = (dt$site == 'Peru'),
+      family = 'binomial'
+    ),
+    glm(
+      day14 ~ baselinetb +
+        ns(I(1 - tb) * baseyear, knots = c(2012,2016,2019)) +
+        ns(I(tb) * baseyear, knots =c(2014,2019)),
+      dt ,
+      subset = (dt$site == 'Peru'),
+      family = 'binomial'
+    ),
+      glm(day30~ baselinetb + 
+        ns(I(1-tb)*baseyear,knots = c(2012,2016,2019)) +
+        ns(I(tb) * baseyear, knots = c(2012,2016,2019))
+      ,
+      dt ,
+      subset = (dt$site == 'Peru'),
+    family='binomial'),
+      glm(day180~ baselinetb + 
+        ns(I(1-tb)*baseyear,knots = c(2012,2016,2019))  +
+        ns(I(tb) * baseyear, knots =c(2014,2019))
+      ,
+    dt ,
+    subset = (dt$site=='Peru'),
+    family='binomial')
+  )
+```
+
+```{r Honduras}
+model_Honduras =
+  list(
+    glm(
+      day0 ~ baselinetb +
+        ns(I(1 - tb) * baseyear, 3) +
+        ns(I(tb) * baseyear,1)
+      ,
+      dt ,
+      subset = (dt$site == 'Honduras'),
+      family = 'binomial'
+    ),
+    glm(
+      day1 ~ baselinetb +
+        ns(I(1 - tb) * baseyear, 3) +
+        ns(I(tb) * baseyear,1)
+      ,
+      dt ,
+      subset = (dt$site == 'Honduras'),
+      family = 'binomial'
+    ),
+    glm(
+      day14 ~ baselinetb +
+        ns(I(1 - tb) * baseyear,3) +
+        ns(I(tb) * baseyear, 1),
+      dt ,
+      subset = (dt$site == 'Honduras'),
+      family = 'binomial'
+    ),
+      glm(day30~ baselinetb + 
+        ns(I(1-tb)*baseyear,3) +
+        ns(I(tb) * baseyear,1)
+      ,
+      dt ,
+      subset = (dt$site == 'Honduras'),
+    family='binomial'),
+      glm(day180~ baselinetb + 
+        ns(I(1-tb)*baseyear,3) 
+      ,
+    dt ,
+    subset = (dt$site=='Honduras'),
+    family='binomial')
+  )
+```
+
+
+
+```{r Mexico}
+model_Mexico =
+  list(
+    glm(
+      day0 ~ baselinetb +
+        ns(I(1 - tb) * baseyear, knots = c(2011, 2014))
+      +
+        ns(I(tb) * baseyear, 1)
+      ,
+      dt ,
+      subset = (dt$site == 'Mexico'),
+      family = 'binomial'
+    ),
+    glm(
+      day1 ~ baselinetb +
+        ns(I(1 - tb) * baseyear, knots = c(2011, 2014))
+      +
+        ns(I(tb) * baseyear, 1)
+      ,
+      dt ,
+      subset = (dt$site == 'Mexico'),
+      family = 'binomial'
+    ),
+    glm(
+      day14 ~ baselinetb +
+        ns(I(1 - tb) * baseyear,knots = c(2011, 2014)) +
+        ns(I(tb) * baseyear, 1)
+      ,
+      dt ,
+      subset = (dt$site == 'Mexico'),
+      family = 'binomial'
+    ),
+    glm(
+      day30 ~ baselinetb +
+        ns(I(1 - tb) * baseyear, knots = c(2011, 2014)) +
+        ns(I(tb) * baseyear, 1)
+      ,
+      dt ,
+      subset = (dt$site == 'Mexico'),
+      family = 'binomial'
+    ),
+    glm(
+      day180 ~ baselinetb +
+        ns(I(1 - tb) * baseyear, knots = c(2011, 2014))+
+        ns(I(tb) * baseyear, 1)
+      ,
+      dt ,
+      subset = (dt$site == 'Mexico'),
+      family = 'binomial'
+    )
+  )
+```
+
+
+
+```{r Haiti}
+model_Haiti =
+  list(
+    glm(
+      day0 ~ baselinetb +
+        ns(I(1 - tb) * baseyear, knots = c(2013,2018)) +
+        ns(I(tb) * baseyear, knots = c(2013,2018))
+      ,
+      dt ,
+      subset = (dt$site == 'Haiti'),
+      family = 'binomial'
+    ),
+    glm(
+      day1 ~ baselinetb +
+        ns(I(1 - tb) * baseyear, knots = c(2011, 2015, 2019)) +
+        ns(I(tb) * baseyear, knots = c(2011, 2015, 2019))
+      ,
+      dt ,
+      subset = (dt$site == 'Haiti'),
+      family = 'binomial'
+    ),
+    glm(
+      day14 ~ baselinetb +
+        ns(I(1 - tb) * baseyear, knots = c(2011, 2015, 2019)) +
+        ns(I(tb) * baseyear, knots =c(2011, 2015, 2019)),
+      dt ,
+      subset = (dt$site == 'Haiti'),
+      family = 'binomial'
+    ),
+      glm(day30~ baselinetb + 
+        ns(I(1-tb)*baseyear,knots = c(2011,2015,2019)) +
+        ns(I(tb) * baseyear, 1)
+      ,
+    dt ,
+    subset = (dt$site=='Haiti'),
+    family='binomial'),
+      glm(day180~ baselinetb + 
+        ns(I(1-tb)*baseyear,knots = c(2011,2015,2019))+
+        ns(I(tb) * baseyear,1)
+      ,
+    dt ,
+    subset = (dt$site=='Haiti'),
+    family='binomial')
+  )
+```
+
+
+```{r Brazil}
+model_Brazil =
+  list(
+    glm(
+      day0 ~ baselinetb +
+        ns(I(1 - tb) * baseyear, knots = c(2010, 2014, 2019)) +
+        ns(I(tb) * baseyear, 1)
+      ,
+      dt ,
+      subset = (dt$site == 'Brazil'),
+      family = 'binomial'
+    ),
+    glm(
+      day1 ~ baselinetb +
+        ns(I(1 - tb) * baseyear, knots = c(2010, 2014, 2019)) +
+        ns(I(tb) * baseyear, 1)
+      ,
+      dt ,
+      subset = (dt$site == 'Brazil'),
+      family = 'binomial'
+    ),
+    glm(
+      day14 ~ baselinetb +
+        ns(I(1 - tb) * baseyear, knots = c(2010, 2014, 2019)) +
+        ns(I(tb) * baseyear, knots = c(2012, 2019)),
+      dt ,
+      subset = (dt$site == 'Brazil'),
+      family = 'binomial'
+    ),
+      glm(day30~ baselinetb + 
+        ns(I(1-tb)*baseyear,knots = c(2010,2014,2019)) +
+        ns(I(tb) * baseyear,1)
+      ,
+    dt ,
+    subset = (dt$site=='Brazil'),
+    family='binomial'),
+      glm(day180~ baselinetb + 
+        ns(I(1-tb)*baseyear,knots = c(2011,2015,2019)) +
+        ns(I(tb) * baseyear,1)
+      ,
+    dt ,
+    subset = (dt$site=='Brazil'),
+    family='binomial')
+  )
+```
+
+
+```{r Overall}
+model_Overall =
+  list(
+    glm(
+      day0 ~ tb +
+        ns(I(1 - tb) * baseyear, knots = c(2013,2018)) +
+        ns(I(tb) * baseyear, knots = c(2013,2018))
+      ,
+      dt ,
+      family = 'binomial'
+    ),
+    glm(
+      day1 ~ tb +
+        ns(I(1 - tb) * baseyear, knots = c(2011, 2015, 2019)) +
+        ns(I(tb) * baseyear, knots = c(2011, 2015, 2019))
+      ,
+      dt ,
+      family = 'binomial'
+    ),
+    glm(
+      day14 ~ tb +
+        ns(I(1 - tb) * baseyear, knots = c(2011, 2015, 2019)) +
+        ns(I(tb) * baseyear, knots =c(2011, 2015, 2019)),
+      dt ,
+      family = 'binomial'
+    ),
+      glm(day30~ tb + 
+        ns(I(1-tb)*baseyear,knots = c(2011,2015,2019)) +
+        ns(I(tb) * baseyear, knots = c(2011,2015,2019))
+      ,
+    dt ,
+    family='binomial'),
+      glm(day180~ tb + 
+        ns(I(1-tb)*baseyear,knots = c(2011,2015,2019))+
+        ns(I(tb) * baseyear,1)
+      ,
+    dt ,
+    family='binomial')
+  )
+```
+
+
+```{r here is the predicting matrix,eval=F}
+
+#TODO: Only predicting exist data
+
+dt_p = dt %>% 
+  group_by(site,baselinetb,tb) %>% 
+  reframe(baseyear = min(baseyear):max(baseyear)) %>% 
+  ungroup() %>% 
+  filter(baseyear<=2020)
+
+dt_predict =
+  foreach(s = c('Brazil','Honduras','Mexico','Peru','Haiti'),
+          .combine = rbind) %do% {
+    model = get(paste0("model_", s))
+    result = 
+      foreach(i =1:5, .combine = rbind) %do% {
+        m = model[[i]]
+        d = c(0,1,7,30,180)[i]
+      .dt_p = dt_p %>% filter(site==s)
+      hat_y = predict(m, .dt_p, type = 'link')
+      se_y = predict(m, .dt_p, type = 'link', se.fit = T)$se
+      cbind(
+        .dt_p,
+        day = paste0("day-",d),
+        y = 1 / (1 + 1 / exp(hat_y)),
+        lower = 1 / (1 + 1 / exp(hat_y - 1.96 * se_y)),
+        upper = 1 / (1 + 1 / exp(hat_y + 1.96 * se_y))
+      )
+      }
+    result
+          }
+
+dt_predict$day = fct_relevel(dt_predict$day,'day-0','day-1','day-7','day-30','day-180')
+```
+
+```{r eval=T}
+dt_p = dt %>% 
+  group_by(site,baselinetb,tb) %>% 
+  reframe(baseyear = min(baseyear):max(baseyear)) %>% 
+  ungroup()
+
+dt_bra = foreach(i =1:5, .combine = rbind) %do% {
+        s = 'Brazil'
+        m = model_Brazil[[i]]
+        d = c(0,1,7,30,180)[i]
+      .dt_p = dt_p %>% filter(site==s)
+      hat_y = predict(m, .dt_p, type = 'link')
+      se_y = predict(m, .dt_p, type = 'link', se.fit = T)$se
+      cbind(
+        .dt_p,
+        day = paste0("day-",d),
+        y = 1 / (1 + 1 / exp(hat_y)),
+        lower = 1 / (1 + 1 / exp(hat_y - 1.96 * se_y)),
+        upper = 1 / (1 + 1 / exp(hat_y + 1.96 * se_y))
+      )
+      }
+dt_hon = foreach(i =1:5, .combine = rbind) %do% {
+        s = 'Honduras'
+        m = model_Honduras[[i]]
+        d = c(0,1,7,30,180)[i]
+      .dt_p = dt_p %>% filter(site==s)
+      hat_y = predict(m, .dt_p, type = 'link')
+      se_y = predict(m, .dt_p, type = 'link', se.fit = T)$se
+      cbind(
+        .dt_p,
+        day = paste0("day-",d),
+        y = 1 / (1 + 1 / exp(hat_y)),
+        lower = 1 / (1 + 1 / exp(hat_y - 1.96 * se_y)),
+        upper = 1 / (1 + 1 / exp(hat_y + 1.96 * se_y))
+      )
+}
+dt_mex = foreach(i =1:5, .combine = rbind) %do% {
+        s = 'Mexico'
+        m = model_Mexico[[i]]
+        d = c(0,1,7,30,180)[i]
+      .dt_p = dt_p %>% filter(site==s)
+      hat_y = predict(m, .dt_p, type = 'link')
+      se_y = predict(m, .dt_p, type = 'link', se.fit = T)$se
+      cbind(
+        .dt_p,
+        day = paste0("day-",d),
+        y = 1 / (1 + 1 / exp(hat_y)),
+        lower = 1 / (1 + 1 / exp(hat_y - 1.96 * se_y)),
+        upper = 1 / (1 + 1 / exp(hat_y + 1.96 * se_y))
+      )
+}
+dt_per = foreach(i =1:5, .combine = rbind) %do% {
+        s = 'Peru'
+        m = model_Peru[[i]]
+        d = c(0,1,7,30,180)[i]
+      .dt_p = dt_p %>% filter(site==s)
+      hat_y = predict(m, .dt_p, type = 'link')
+      se_y = predict(m, .dt_p, type = 'link', se.fit = T)$se
+      cbind(
+        .dt_p,
+        day = paste0("day-",d),
+        y = 1 / (1 + 1 / exp(hat_y)),
+        lower = 1 / (1 + 1 / exp(hat_y - 1.96 * se_y)),
+        upper = 1 / (1 + 1 / exp(hat_y + 1.96 * se_y))
+      )
+}
+dt_hai = foreach(i =1:5, .combine = rbind) %do% {
+        s = 'Haiti'
+        m = model_Haiti[[i]]
+        d = c(0,1,7,30,180)[i]
+      .dt_p = dt_p %>% filter(site==s)
+      hat_y = predict(m, .dt_p, type = 'link')
+      se_y = predict(m, .dt_p, type = 'link', se.fit = T)$se
+      cbind(
+        .dt_p,
+        day = paste0("day-",d),
+        y = 1 / (1 + 1 / exp(hat_y)),
+        lower = 1 / (1 + 1 / exp(hat_y - 1.96 * se_y)),
+        upper = 1 / (1 + 1 / exp(hat_y + 1.96 * se_y))
+      )
+}
+
+dt_predict = do.call(rbind,
+                     list(dt_bra,dt_hon,dt_mex,dt_per,dt_hai))%>% 
+  filter(baseyear<=2020)
+
+dt_predict$day = fct_relevel(dt_predict$day,'day-0','day-1','day-7','day-30','day-180')
+```
+
+
+```{r here is the predicting matrix for all}
+
+#TODO: Only predicting exist data
+
+dt_p = expand.grid(
+  baseyear=unique(dt$baseyear),
+  tb=(c(0,1)>0)
+) %>% 
+  filter(baseyear<=2020)
+
+model = model_Overall
+dt_all = 
+      foreach(i =1:5, .combine = rbind) %do% {
+        m = model[[i]]
+        d = c(0,1,7,30,180)[i]
+      .dt_p = dt_p 
+      hat_y = predict(m, .dt_p, type = 'link')
+      se_y = predict(m, .dt_p, type = 'link', se.fit = T)$se
+      cbind(
+        .dt_p,
+        day = paste0("day-",d),
+        y = 1 / (1 + 1 / exp(hat_y)),
+        lower = 1 / (1 + 1 / exp(hat_y - 1.96 * se_y)),
+        upper = 1 / (1 + 1 / exp(hat_y + 1.96 * se_y))
+      )
+      }
+
+dt_all$day = fct_relevel(dt_all$day,'day-0','day-1','day-7','day-30')
+```
+
+
+```{r}
+#| fig-width: 8
+#| fig-height: 10
+
+
+dt_predict %>% 
+  select(site,baseyear,baselinetb,day,y) %>% 
+  arrange(site,baseyear,baselinetb) %>% 
+  filter(baseyear %in% c(2006,2020),
+         day %in% c('day-0','day-7'))
+
+foreach(s = sites) %do%{
+  ggplot(dt_predict %>% 
+         filter(site==s),
+       aes(x=baseyear,y=y))+
+  geom_line(aes(color=baselinetb),size=1)+
+  geom_ribbon(aes(ymin=lower,ymax=upper,group=as.factor(baselinetb)),alpha=0.2)+
+  scale_x_continuous(breaks = seq(2006,2020,len=5))+
+  facet_wrap(~day,nrow = 2) +
+  labs(title = paste0("Freqency of ART Initiation:",s),
+       y="Freqency",
+       x="Year of Enrollment")+
+  scale_color_discrete(name = "")+
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = -45))
+}
+```
+
+
+```{r fig 3}
+#| fig-width: 8
+#| fig-height: 10
+
+p = ggplot(dt_predict,
+       aes(x=baseyear,y=y))+
+  geom_line(aes(color=site),size=2,alpha=0.8)+
+  scale_x_continuous(breaks = seq(2006,2020,len=4),
+                     labels = round(seq(2006,2020,len=4)))+
+  facet_wrap(day~baselinetb,nrow = 5) +
+  labs(
+    # title = "Freqency of ART Initiation",
+       y="Estimated Probability of ART Initiation",
+       x="Year of Enrollment")+
+  scale_color_discrete(name = "")+
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = -45),
+        axis.title.y = element_text(margin = margin(r = 15)))
+plot(p)
+ggsave("./figure/fig3_no_cen.png",p,dpi=400,width = 8,height = 10)
+```
+
+
+```{r}
+dt_predict %>% 
+  filter(day=='day-0',baseyear==2020,baselinetb=='No TB') %>% 
+  select(site,baselinetb,y)
+
+dt_predict %>% 
+  filter(day=='day-0',baseyear==2018,baselinetb=='TB') %>% 
+  select(site,baselinetb,y)
+
+dt_predict %>% 
+  filter(day=='day-7',baseyear==2020,baselinetb=='No TB') %>% 
+  select(site,baselinetb,y)
+
+dt_predict %>% 
+  filter(day=='day-7',baseyear==2018,baselinetb=='TB') %>% 
+  select(site,baselinetb,y)
+
+dt_predict %>% 
+  filter(day=='day-180',baseyear==2018,baselinetb=='No TB') %>% 
+  select(site,baselinetb,y)
+
+dt_predict %>% 
+  filter(day=='day-180',baseyear==2018,baselinetb=='TB') %>% 
+  select(site,baselinetb,y)
+```
+
+
+## CD4 <100
+
+```{r cd4 less than 100}
+
+dt %>% 
+  group_by(baseyear) %>% 
+  summarise(cd4_less_100 = mean(cd4_base<100,na.rm = T))
+
+```
+
+
+## HIV enrollment
+
+```{r hiv dt}
+set.seed(123123)
+dt = readRDS("data/rebuilt_data.rds")
+
+dt = select(dt,!where(lubridate::is.Date))%>% 
+  filter(fuhiv2art>=0,
+         hivyear>=2006,
+         HAART>0
+         ) %>% 
+  mutate(futime = fuhiv2art,
+         baseyear = hivyear,
+         day0 = futime<1,
+         day1 = futime<=1,
+         day14 = futime<=14,
+         day30 = futime<=30,
+         day180 = futime<=180,
+         ) 
+
+dd <- datadist(dt) 
+options(datadist= 'dd')
+
+dd$limits$baseage[2] <- 35
+# dd$limits$male[2] <- "Male"
+dd$limits$cd4_base[2] <- 350
+dd$limits$baseyear[2] <- 2006
+
+```
+
+
+```{r Peru 2}
+model_Peru =
+  list(
+    glm(
+      day0 ~ baselinetb +
+        ns(I(1 - tb) * baseyear,3) +
+        ns(I(tb) * baseyear, 1)
+      ,
+      dt ,
+      subset = (dt$site == 'Peru'),
+      family = 'binomial'
+    ),
+    glm(
+      day1 ~ baselinetb +
+        ns(I(1 - tb) * baseyear,3) +
+       ns(I(tb) * baseyear, 1)
+      ,
+      dt ,
+      subset = (dt$site == 'Peru'),
+      family = 'binomial'
+    ),
+    glm(
+      day14 ~ baselinetb +
+        ns(I(1 - tb) * baseyear,3) +
+        ns(I(tb) * baseyear,1),
+      dt ,
+      subset = (dt$site == 'Peru'),
+      family = 'binomial'
+    ),
+      glm(day30~ baselinetb + 
+        ns(I(1-tb)*baseyear,3) +
+        ns(I(tb) * baseyear,1)
+      ,
+      dt ,
+      subset = (dt$site == 'Peru'),
+    family='binomial'),
+      glm(day180~ baselinetb + 
+        ns(I(1-tb)*baseyear,3)  +
+        ns(I(tb) * baseyear,1)
+      ,
+    dt ,
+    subset = (dt$site=='Peru'),
+    family='binomial')
+  )
+```
+
+```{r Honduras 2}
+model_Honduras =
+  list(
+    glm(
+      day0 ~ baselinetb +
+        ns(I(1 - tb) * baseyear, 3)
+      ,
+      dt ,
+      subset = (dt$site == 'Honduras'),
+      family = 'binomial'
+    ),
+    glm(
+      day1 ~ baselinetb +
+        ns(I(1 - tb) * baseyear, 3) +
+        ns(I(tb) * baseyear,1)
+      ,
+      dt ,
+      subset = (dt$site == 'Honduras'),
+      family = 'binomial'
+    ),
+    glm(
+      day14 ~ baselinetb +
+        ns(I(1 - tb) * baseyear,3) +
+        ns(I(tb) * baseyear, 1),
+      dt ,
+      subset = (dt$site == 'Honduras'),
+      family = 'binomial'
+    ),
+      glm(day30~ baselinetb + 
+        ns(I(1-tb)*baseyear,3) +
+        ns(I(tb) * baseyear,1)
+      ,
+      dt ,
+      subset = (dt$site == 'Honduras'),
+    family='binomial'),
+      glm(day180~ baselinetb + 
+        ns(I(1-tb)*baseyear,3) 
+      ,
+    dt ,
+    subset = (dt$site=='Honduras'),
+    family='binomial')
+  )
+```
+
+
+
+```{r Mexico 2}
+model_Mexico =
+  list(
+    glm(
+      day0 ~ baselinetb +
+        ns(I(1 - tb) * baseyear, 1) +
+        ns(I(tb) * baseyear, 1)
+      ,
+      dt ,
+      subset = (dt$site == 'Mexico'),
+      family = 'binomial'
+    ),
+    glm(
+      day1 ~ baselinetb +
+        ns(I(1 - tb) * baseyear, 1)
+      +
+        ns(I(tb) * baseyear, 1)
+      ,
+      dt ,
+      subset = (dt$site == 'Mexico'),
+      family = 'binomial'
+    ),
+    glm(
+      day14 ~ baselinetb +
+        ns(I(1 - tb) * baseyear,2) +
+        ns(I(tb) * baseyear, 1)
+      ,
+      dt ,
+      subset = (dt$site == 'Mexico'),
+      family = 'binomial'
+    ),
+    glm(
+      day30 ~ baselinetb +
+        ns(I(1 - tb) * baseyear, 2) +
+        ns(I(tb) * baseyear, 1)
+      ,
+      dt ,
+      subset = (dt$site == 'Mexico'),
+      family = 'binomial'
+    ),
+    glm(
+      day180 ~ baselinetb +
+        ns(I(1 - tb) * baseyear, 2)+
+        ns(I(tb) * baseyear, 1)
+      ,
+      dt ,
+      subset = (dt$site == 'Mexico'),
+      family = 'binomial'
+    )
+  )
+```
+
+
+
+```{r Haiti 2}
+model_Haiti =
+  list(
+    glm(
+      day0 ~ baselinetb +
+        ns(I(1 - tb) * baseyear,2) +
+        ns(I(tb) * baseyear, 1)
+      ,
+      dt ,
+      subset = (dt$site == 'Haiti'),
+      family = 'binomial'
+    ),
+    glm(
+      day1 ~ baselinetb +
+        ns(I(1 - tb) * baseyear, 3) +
+        ns(I(tb) * baseyear, 1)
+      ,
+      dt ,
+      subset = (dt$site == 'Haiti'),
+      family = 'binomial'
+    ),
+    glm(
+      day14 ~ baselinetb +
+        ns(I(1 - tb) * baseyear, 3) +
+        ns(I(tb) * baseyear, 1),
+      dt ,
+      subset = (dt$site == 'Haiti'),
+      family = 'binomial'
+    ),
+      glm(day30~ baselinetb + 
+        ns(I(1-tb)*baseyear,3) +
+        ns(I(tb) * baseyear, 1)
+      ,
+    dt ,
+    subset = (dt$site=='Haiti'),
+    family='binomial'),
+      glm(day180~ baselinetb + 
+        ns(I(1-tb)*baseyear,3)+
+        ns(I(tb) * baseyear,1)
+      ,
+    dt ,
+    subset = (dt$site=='Haiti'),
+    family='binomial')
+  )
+```
+
+
+```{r Brazil 2}
+model_Brazil =
+  list(
+    glm(
+      day0 ~ baselinetb +
+        ns(I(1 - tb) * baseyear, 3) +
+        ns(I(tb) * baseyear, 1)
+      ,
+      dt ,
+      subset = (dt$site == 'Brazil'),
+      family = 'binomial'
+    ),
+    glm(
+      day1 ~ baselinetb +
+        ns(I(1 - tb) * baseyear, 3) +
+        ns(I(tb) * baseyear, 1)
+      ,
+      dt ,
+      subset = (dt$site == 'Brazil'),
+      family = 'binomial'
+    ),
+    glm(
+      day14 ~ baselinetb +
+        ns(I(1 - tb) * baseyear, 3) +
+        ns(I(tb) * baseyear, 1),
+      dt ,
+      subset = (dt$site == 'Brazil'),
+      family = 'binomial'
+    ),
+      glm(day30~ baselinetb + 
+        ns(I(1-tb)*baseyear,3) +
+        ns(I(tb) * baseyear,1)
+      ,
+    dt ,
+    subset = (dt$site=='Brazil'),
+    family='binomial'),
+      glm(day180~ baselinetb + 
+        ns(I(1-tb)*baseyear,3) +
+        ns(I(tb) * baseyear,1)
+      ,
+    dt ,
+    subset = (dt$site=='Brazil'),
+    family='binomial')
+  )
+```
+
+
+```{r here is the predicting matrix 2}
+
+#TODO: Only predicting exist data
+
+sites = unique(dt$site)
+
+dt_p = dt %>% 
+  group_by(site,baselinetb,tb) %>% 
+  reframe(baseyear = min(baseyear):max(baseyear)) %>% 
+  ungroup()%>% 
+  filter(baseyear<=2020)
+
+dt_predict =
+  foreach(s = sites,
+          .combine = rbind) %do% {
+    model = get(paste0("model_", s))
+    result = 
+      foreach(i =1:5, .combine = rbind) %do% {
+        m = model[[i]]
+        d = c(0,1,7,30,180)[i]
+      .dt_p = dt_p %>% filter(site==s)
+      hat_y = predict(m, .dt_p, type = 'link')
+      se_y = predict(m, .dt_p, type = 'link', se.fit = T)$se
+      cbind(
+        .dt_p,
+        day = paste0("day-",d),
+        y = 1 / (1 + 1 / exp(hat_y)),
+        lower = 1 / (1 + 1 / exp(hat_y - 1.96 * se_y)),
+        upper = 1 / (1 + 1 / exp(hat_y + 1.96 * se_y))
+      )
+      }
+    result
+          }
+
+dt_predict$day = fct_relevel(dt_predict$day,'day-0','day-1','day-7','day-30')
+```
+
+
+```{r}
+dt_predict %>% 
+  filter(day=='day-0',baseyear==2020,baselinetb=='No TB') %>% 
+  select(site,baselinetb,y) %>% 
+  mutate(y = round(y,4))
+
+dt_predict %>% 
+  filter(day=='day-0',baseyear==2017,baselinetb=='TB') %>% 
+  select(site,baselinetb,y) %>% 
+  mutate(y = round(y,4))
+
+dt_predict %>% 
+  filter(day=='day-180',baseyear==2020,baselinetb=='No TB') %>% 
+  select(site,baselinetb,y) %>% 
+  mutate(y = round(y,4))
+
+dt_predict %>% 
+  filter(day=='day-180',baseyear==2017,baselinetb=='TB') %>% 
+  select(site,baselinetb,y) %>% 
+  mutate(y = round(y,4))
+```
+
+```{r}
+p = ggplot(dt_predict,
+       aes(x=baseyear,y=y))+
+  geom_line(aes(color=site),size=2,alpha=0.8)+
+  # geom_ribbon(aes(ymin=lower,ymax=upper,group=as.factor(site)),alpha=0.1)+
+  scale_x_continuous(breaks = seq(2006,2020,len=4),
+                     labels = round(seq(2006,2020,len=4)))+
+  facet_wrap(day~baselinetb,nrow = 5) +
+  labs(title = "Freqency of ART Initiation",
+       y="Freqency",
+       x="Year of Enrollment")+
+  scale_color_discrete(name = "")+
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = -45))
+plot(p)
+```
+
